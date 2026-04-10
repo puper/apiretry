@@ -79,6 +79,18 @@ type StreamProbe interface { ProbeFirstEvent(ctx, body, timeout) (preRead, rest,
 type RetryPolicy interface { Decide(input DecideInput) RetryDecision }
 ```
 
+## 中间件顺序约束
+
+- 入口链路按执行顺序应为：`BodySizeLimit -> RequestID -> Logging -> 业务 Handler`
+- `RequestID` 必须位于 `Logging` 外层，确保日志读取到已注入的 `request_id`
+- `Logging` 记录 `request completed` 时，`request_id` 不应为空
+
+## 代理日志上下文约束
+
+- `StreamProxy` 与 `NonStreamProxy` 的重试/上游错误日志必须携带请求上下文字段：`request_id`、`method`、`path`
+- 同一请求内的多条 `upstream HTTP error`、`upstream network error`、`retry budget exceeded` 应可通过 `request_id` 关联
+- 日志字段需保持结构化输出，避免仅在消息文本中拼接路径
+
 ## 重试策略
 
 | 错误类型 | 退避 schedule | 最大单次延迟 |
@@ -94,6 +106,11 @@ type RetryPolicy interface { Decide(input DecideInput) RetryDecision }
 - `data: [DONE]` 合法
 - JSON payload 必须包含 `id` 或 `choices` 字段
 - `bufio.Reader.Peek(Buffered())` 取回预读数据，`io.MultiReader` 组合流
+
+## 流复制结束语义
+
+- 在流式响应提交后，剩余流转发阶段读取到 `io.EOF` 代表上游正常结束
+- `io.EOF` 不应按错误级别记录，不应触发 `stream copy error`
 
 ## 不可重试状态码
 

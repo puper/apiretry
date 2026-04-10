@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -34,6 +35,11 @@ func NewStreamProxy(doer upstream.Doer, policy *retry.Policy, probe stream.Strea
 
 func (sp *StreamProxy) ServeHTTP(w http.ResponseWriter, r *http.Request, bodyBytes []byte) {
 	ctx := r.Context()
+	reqLogger := sp.logger.With(
+		"request_id", util.RequestIDFromContext(ctx),
+		"method", r.Method,
+		"path", r.URL.Path,
+	)
 	attemptCtx := NewAttemptContext(sp.cfg.Retry.MaxAttempts, sp.cfg.Retry.MaxRetryDelayBudget)
 	firstByteTimeout := sp.cfg.Retry.FirstByteTimeout
 	chunkIdleTimeout := sp.cfg.Retry.ChunkIdleTimeout
@@ -42,7 +48,7 @@ func (sp *StreamProxy) ServeHTTP(w http.ResponseWriter, r *http.Request, bodyByt
 
 	for {
 		if !attemptCtx.NextAttempt() {
-			sp.logger.Error("retry budget exceeded",
+			reqLogger.Error("retry budget exceeded",
 				"attempts", attemptCtx.Attempt(),
 				"budget", sp.cfg.Retry.MaxRetryDelayBudget,
 				"last_error", lastErr,
@@ -57,7 +63,7 @@ func (sp *StreamProxy) ServeHTTP(w http.ResponseWriter, r *http.Request, bodyByt
 
 		upstreamReq, err := upstream.BuildRequest(r, &sp.cfg.Upstream, bodyBytes)
 		if err != nil {
-			sp.logger.Error("build upstream request failed", "error", err)
+			reqLogger.Error("build upstream request failed", "error", err)
 			util.WriteProxyError(w, http.StatusBadGateway, err.Error(), "proxy_upstream_error")
 			return
 		}
@@ -71,7 +77,7 @@ func (sp *StreamProxy) ServeHTTP(w http.ResponseWriter, r *http.Request, bodyByt
 				IsBeforeFirstByte: true,
 				ElapsedDelay:      attemptCtx.elapsedDelay,
 			})
-			sp.logger.Info("upstream network error",
+			reqLogger.Info("upstream network error",
 				"attempt", attemptCtx.Attempt(),
 				"error", err,
 				"should_retry", decision.ShouldRetry,
@@ -107,7 +113,7 @@ func (sp *StreamProxy) ServeHTTP(w http.ResponseWriter, r *http.Request, bodyByt
 				RetryAfterHeader:  retryAfter,
 				ElapsedDelay:      attemptCtx.elapsedDelay,
 			})
-			sp.logger.Info("upstream HTTP error",
+			reqLogger.Info("upstream HTTP error",
 				"attempt", attemptCtx.Attempt(),
 				"status", resp.StatusCode,
 				"should_retry", decision.ShouldRetry,
@@ -141,7 +147,7 @@ func (sp *StreamProxy) ServeHTTP(w http.ResponseWriter, r *http.Request, bodyByt
 				IsBeforeFirstByte: true,
 				ElapsedDelay:      attemptCtx.elapsedDelay,
 			})
-			sp.logger.Info("first byte probe failed",
+			reqLogger.Info("first byte probe failed",
 				"attempt", attemptCtx.Attempt(),
 				"error", probeErr,
 				"should_retry", decision.ShouldRetry,
@@ -180,8 +186,8 @@ func (sp *StreamProxy) ServeHTTP(w http.ResponseWriter, r *http.Request, bodyByt
 		rest.Close()
 		fw.Flush()
 
-		if copyErr != nil {
-			sp.logger.Error("stream copy error",
+		if copyErr != nil && !errors.Is(copyErr, io.EOF) {
+			reqLogger.Error("stream copy error",
 				"error", copyErr,
 				"attempt", attemptCtx.Attempt(),
 			)

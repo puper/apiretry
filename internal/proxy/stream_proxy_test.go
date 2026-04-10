@@ -1,9 +1,11 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,7 +15,6 @@ import (
 	"github.com/puper/apiretry/internal/retry"
 	"github.com/puper/apiretry/internal/stream"
 	"github.com/puper/apiretry/internal/util"
-	"log/slog"
 )
 
 type mockProbe struct {
@@ -70,6 +71,81 @@ func TestStreamProxy_HappyPath(t *testing.T) {
 	}
 	if rec.Body.String() != sseBody {
 		t.Fatalf("响应体不匹配: got %q", rec.Body.String())
+	}
+}
+
+func TestStreamProxy_EOFNotLoggedAsError(t *testing.T) {
+	sseBody := "data: {\"id\":\"chatcmpl-1\",\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\ndata: [DONE]\n\n"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(sseBody))
+	}))
+	defer server.Close()
+
+	cfg := testConfig()
+	cfg.Upstream.BaseURL = server.URL
+	policy := retry.NewPolicy(&cfg.Retry)
+	probe := &stream.DefaultProbe{}
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+
+	doer := testDoer(server)
+	sp := NewStreamProxy(doer, policy, probe, cfg, logger)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"stream":true}`))
+	req.Header.Set("Accept", "text/event-stream")
+	rec := httptest.NewRecorder()
+
+	sp.ServeHTTP(rec, req, []byte(`{"stream":true}`))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, 期望 200", rec.Code)
+	}
+	if strings.Contains(logs.String(), `"msg":"stream copy error"`) {
+		t.Fatalf("正常 EOF 不应记录 stream copy error: %s", logs.String())
+	}
+}
+
+func TestStreamProxy_LogHasRequestContext(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte(`{"error":"rate limited"}`))
+	}))
+	defer server.Close()
+
+	cfg := testConfig()
+	cfg.Upstream.BaseURL = server.URL
+	cfg.Retry.MaxAttempts = 1
+	policy := retry.NewPolicy(&cfg.Retry)
+	probe := &stream.DefaultProbe{}
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+
+	doer := testDoer(server)
+	sp := NewStreamProxy(doer, policy, probe, cfg, logger)
+
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(`{"stream":true}`))
+	req = req.WithContext(util.WithRequestID(req.Context(), "req-s-1"))
+	rec := httptest.NewRecorder()
+
+	sp.ServeHTTP(rec, req, []byte(`{"stream":true}`))
+
+	logText := logs.String()
+	if !strings.Contains(logText, `"msg":"upstream HTTP error"`) {
+		t.Fatalf("未找到 upstream HTTP error 日志: %s", logText)
+	}
+	if !strings.Contains(logText, `"request_id":"req-s-1"`) {
+		t.Fatalf("日志缺少 request_id: %s", logText)
+	}
+	if !strings.Contains(logText, fmt.Sprintf(`"method":"%s"`, http.MethodPost)) {
+		t.Fatalf("日志缺少 method: %s", logText)
+	}
+	if !strings.Contains(logText, `"path":"/v1/chat/completions"`) {
+		t.Fatalf("日志缺少 path: %s", logText)
 	}
 }
 

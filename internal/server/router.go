@@ -15,8 +15,8 @@ func NewRouter(handler http.Handler, cfg *config.Config, logger *slog.Logger) ht
 	mux.Handle("/", handler)
 
 	var h http.Handler = mux
-	h = RequestIDMiddleware(h)
 	h = LoggingMiddleware(logger, h)
+	h = RequestIDMiddleware(h)
 	h = BodySizeLimitMiddleware(cfg.Limits.MaxRequestBodyBytes, h)
 
 	return h

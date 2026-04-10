@@ -29,13 +29,18 @@ func NewNonStreamProxy(doer upstream.Doer, policy *retry.Policy, cfg *config.Con
 
 func (nsp *NonStreamProxy) ServeHTTP(w http.ResponseWriter, r *http.Request, bodyBytes []byte) {
 	ctx := r.Context()
+	reqLogger := nsp.logger.With(
+		"request_id", util.RequestIDFromContext(ctx),
+		"method", r.Method,
+		"path", r.URL.Path,
+	)
 	attemptCtx := NewAttemptContext(nsp.cfg.Retry.MaxAttempts, nsp.cfg.Retry.MaxRetryDelayBudget)
 
 	var lastErr error
 
 	for {
 		if !attemptCtx.NextAttempt() {
-			nsp.logger.Error("retry budget exceeded",
+			reqLogger.Error("retry budget exceeded",
 				"attempts", attemptCtx.Attempt(),
 				"budget", nsp.cfg.Retry.MaxRetryDelayBudget,
 				"last_error", lastErr,
@@ -50,7 +55,7 @@ func (nsp *NonStreamProxy) ServeHTTP(w http.ResponseWriter, r *http.Request, bod
 
 		upstreamReq, err := upstream.BuildRequest(r, &nsp.cfg.Upstream, bodyBytes)
 		if err != nil {
-			nsp.logger.Error("build upstream request failed", "error", err)
+			reqLogger.Error("build upstream request failed", "error", err)
 			util.WriteProxyError(w, http.StatusBadGateway, err.Error(), "proxy_upstream_error")
 			return
 		}
@@ -63,7 +68,7 @@ func (nsp *NonStreamProxy) ServeHTTP(w http.ResponseWriter, r *http.Request, bod
 				Err:          err,
 				ElapsedDelay: attemptCtx.elapsedDelay,
 			})
-			nsp.logger.Info("upstream network error",
+			reqLogger.Info("upstream network error",
 				"attempt", attemptCtx.Attempt(),
 				"error", err,
 				"should_retry", decision.ShouldRetry,
@@ -90,7 +95,7 @@ func (nsp *NonStreamProxy) ServeHTTP(w http.ResponseWriter, r *http.Request, bod
 				Err:          readErr,
 				ElapsedDelay: attemptCtx.elapsedDelay,
 			})
-			nsp.logger.Info("upstream body read error",
+			reqLogger.Info("upstream body read error",
 				"attempt", attemptCtx.Attempt(),
 				"error", readErr,
 				"should_retry", decision.ShouldRetry,
@@ -115,7 +120,7 @@ func (nsp *NonStreamProxy) ServeHTTP(w http.ResponseWriter, r *http.Request, bod
 				RetryAfterHeader: retryAfter,
 				ElapsedDelay:     attemptCtx.elapsedDelay,
 			})
-			nsp.logger.Info("upstream HTTP error",
+			reqLogger.Info("upstream HTTP error",
 				"attempt", attemptCtx.Attempt(),
 				"status", resp.StatusCode,
 				"should_retry", decision.ShouldRetry,

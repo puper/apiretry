@@ -1,14 +1,18 @@
 package proxy
 
 import (
+	"bytes"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/puper/apiretry/internal/retry"
 	"log/slog"
+
+	"github.com/puper/apiretry/internal/retry"
+	"github.com/puper/apiretry/internal/util"
 )
 
 func TestNonStreamProxy_HappyPath(t *testing.T) {
@@ -146,5 +150,44 @@ func TestNonStreamProxy_BudgetExceeded(t *testing.T) {
 	}
 	if rec.Code != http.StatusGatewayTimeout {
 		t.Fatalf("status = %d, 期望 504", rec.Code)
+	}
+}
+
+func TestNonStreamProxy_LogHasRequestContext(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		w.Write([]byte(`{"error":"rate limited"}`))
+	}))
+	defer server.Close()
+
+	cfg := testConfig()
+	cfg.Upstream.BaseURL = server.URL
+	cfg.Retry.MaxAttempts = 1
+	policy := retry.NewPolicy(&cfg.Retry)
+
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&logs, nil))
+	doer := testDoer(server)
+	nsp := NewNonStreamProxy(doer, policy, cfg, logger)
+
+	body := `{"model":"gpt-4","messages":[]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", strings.NewReader(body))
+	req = req.WithContext(util.WithRequestID(req.Context(), "req-ns-1"))
+	rec := httptest.NewRecorder()
+
+	nsp.ServeHTTP(rec, req, []byte(body))
+
+	logText := logs.String()
+	if !strings.Contains(logText, `"msg":"upstream HTTP error"`) {
+		t.Fatalf("未找到 upstream HTTP error 日志: %s", logText)
+	}
+	if !strings.Contains(logText, `"request_id":"req-ns-1"`) {
+		t.Fatalf("日志缺少 request_id: %s", logText)
+	}
+	if !strings.Contains(logText, fmt.Sprintf(`"method":"%s"`, http.MethodPost)) {
+		t.Fatalf("日志缺少 method: %s", logText)
+	}
+	if !strings.Contains(logText, `"path":"/v1/chat/completions"`) {
+		t.Fatalf("日志缺少 path: %s", logText)
 	}
 }

@@ -15,4 +15,6 @@
 
 | 日期 | 变更 |
 |---|---|
+| 2026-04-10 | 修复代理重试/错误日志上下文：`upstream HTTP error` 等日志新增 `request_id`、`method`、`path` 字段，便于并发请求排障 |
+| 2026-04-10 | 修复中间件顺序：确保 request completed 日志可记录 request_id；修复流式转发：io.EOF 视为正常结束，不再记录 stream copy error |
 | 2026-04-10 | 初始实现完成：流式/非流式代理、首包闸门重试、配置化、集成测试 |
