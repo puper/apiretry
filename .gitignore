@@ -5,3 +5,4 @@ proxy
 *.out
 coverage.html
 coverage.out
+/.*

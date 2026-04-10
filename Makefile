@@ -1,9 +1,12 @@
-.PHONY: build test lint fmt coverage clean
+.PHONY: build build-linux test lint fmt coverage clean
 
 BINARY_NAME=apiretry
 
 build:
 	go build -o bin/$(BINARY_NAME) ./cmd/proxy/
+
+build-linux:
+	GOOS=linux GOARCH=amd64 go build -o bin/$(BINARY_NAME)-linux-amd64 ./cmd/proxy/
 
 test:
 	go test ./... -timeout 60s -v

@@ -1,0 +1,16 @@
+services:
+  apiretry:
+    image: golang:1.26.2
+    container_name: apiretry
+    restart: unless-stopped
+    volumes:
+      - ./:/app
+    working_dir: /app
+    networks:
+      default:
+        ipv4_address: 172.18.0.103
+    command: ["/app/apiretry", "-config", "/app/config.yml"]
+networks:
+  default:
+    external: true
+    name: mynet
