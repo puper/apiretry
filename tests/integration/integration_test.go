@@ -377,7 +377,7 @@ func TestIntegration_HealthEndpoint(t *testing.T) {
 	}
 }
 
-func TestIntegration_PassThrough_v1_Path(t *testing.T) {
+func TestIntegration_PassThroughV1Path(t *testing.T) {
 	var receivedPath string
 	proxySrv := setupProxy(t, func(w http.ResponseWriter, r *http.Request) {
 		receivedPath = r.URL.Path
@@ -392,7 +392,6 @@ func TestIntegration_PassThrough_v1_Path(t *testing.T) {
 	}{
 		{"v1_chat_completions", "/v1/chat/completions"},
 		{"v1_models", "/v1/models"},
-		{"other_path", "/api/test"},
 	}
 
 	for _, tt := range tests {
@@ -411,5 +410,26 @@ func TestIntegration_PassThrough_v1_Path(t *testing.T) {
 				t.Errorf("收到路径 = %q, 期望 %q", receivedPath, tt.path)
 			}
 		})
+	}
+}
+
+func TestIntegration_RejectNonV1PathBeforeUpstream(t *testing.T) {
+	var upstreamCalls int32
+	proxySrv := setupProxy(t, func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&upstreamCalls, 1)
+		w.WriteHeader(http.StatusTooManyRequests)
+	})
+
+	resp, err := http.Get(proxySrv.URL + "/pinfo.php")
+	if err != nil {
+		t.Fatalf("请求探测路径失败: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusNotFound {
+		t.Errorf("探测路径状态码 = %d, 期望 %d", resp.StatusCode, http.StatusNotFound)
+	}
+	if got := atomic.LoadInt32(&upstreamCalls); got != 0 {
+		t.Fatalf("探测路径不应访问上游，避免上游限流响应进入重试循环；实际访问次数 = %d", got)
 	}
 }

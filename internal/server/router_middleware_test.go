@@ -39,3 +39,27 @@ func TestNewRouter_LoggingHasRequestID(t *testing.T) {
 		t.Fatalf("request_id 不应为空: %s", logText)
 	}
 }
+
+func TestNewRouter_RejectsProbePathBeforeProxy(t *testing.T) {
+	cfg := config.DefaultConfig()
+	logger := slog.New(slog.NewJSONHandler(&bytes.Buffer{}, nil))
+
+	proxyCalled := false
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		proxyCalled = true
+		w.WriteHeader(http.StatusNoContent)
+	})
+
+	router := NewRouter(handler, cfg, logger)
+
+	req := httptest.NewRequest(http.MethodGet, "/pinfo.php", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if proxyCalled {
+		t.Fatal("探测路径不应进入代理，避免上游 429/5xx 被重试消耗资源")
+	}
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("状态码 = %d, 期望 %d", rec.Code, http.StatusNotFound)
+	}
+}
